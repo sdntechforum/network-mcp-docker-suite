@@ -1,0 +1,23 @@
+# Prevent environment files from being copied into container
+.env
+.env.*
+*.env
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Git
+.git
+.gitignore
+
