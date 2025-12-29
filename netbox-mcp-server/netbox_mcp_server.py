@@ -378,13 +378,284 @@ def delete_object(endpoint: str, object_id: int) -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+# ---- Custom Scripts Tools ----
+@mcp.tool()
+def get_custom_scripts() -> Dict[str, Any]:
+    """
+    List all available custom scripts in NetBox.
+    
+    Custom scripts are user-defined workflows that can automate complex operations
+    like provisioning sites, configuring devices, or running compliance checks.
+    Each script has a name, description, and required parameters (vars).
+    
+    Returns:
+        Dict with success status and list of available scripts with their metadata:
+        - id: Script ID
+        - name: Script class name (e.g., "CreateSiteAndLocations")
+        - description: Human-readable description of what the script does
+        - vars: Dictionary of input variables and their types
+        - is_executable: Whether the script can be executed
+        - result: Last execution result (if any)
+    
+    Example:
+        scripts = get_custom_scripts()
+        for script in scripts["data"]:
+            print(f"{script['name']}: {script['description']}")
+            print(f"Required parameters: {script['vars']}")
+    """
+    try:
+        response = client.get("extras/scripts")
+        
+        # Format the response for better readability
+        if isinstance(response, list):
+            scripts_list = response
+        elif isinstance(response, dict) and 'results' in response:
+            scripts_list = response['results']
+        else:
+            scripts_list = []
+        
+        # Enhance script info for AI understanding
+        enhanced_scripts = []
+        for script in scripts_list:
+            enhanced_scripts.append({
+                "id": script.get("id"),
+                "name": script.get("name"),
+                "description": script.get("description", "No description available"),
+                "display": script.get("display"),
+                "module": script.get("module"),
+                "vars": script.get("vars", {}),
+                "is_executable": script.get("is_executable", False),
+                "last_result": script.get("result")
+            })
+        
+        return {
+            "success": True,
+            "count": len(enhanced_scripts),
+            "data": enhanced_scripts
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def find_custom_script(query: str) -> Dict[str, Any]:
+    """
+    Search for custom scripts by name or description.
+    
+    This tool helps find the right script when you have a natural language description
+    of what you want to do. It searches script names and descriptions for matches.
+    
+    Args:
+        query: Search term (e.g., "create site", "add switches", "provision")
+    
+    Returns:
+        Dict with matching scripts and their details
+    
+    Example:
+        # Find scripts related to creating sites
+        matches = find_custom_script("create site")
+        
+        # Result might include:
+        # - CreateSiteAndLocations: "Script to create a new site and associated floors"
+        # - ProvisionNewSite: "Provision a complete site with VLANs and IP space"
+    """
+    try:
+        # Get all scripts
+        all_scripts_result = get_custom_scripts()
+        
+        if not all_scripts_result.get("success"):
+            return all_scripts_result
+        
+        all_scripts = all_scripts_result.get("data", [])
+        query_lower = query.lower()
+        
+        # Search in name and description
+        matches = []
+        for script in all_scripts:
+            name = script.get("name", "").lower()
+            description = script.get("description", "").lower()
+            display = script.get("display", "").lower()
+            
+            # Calculate relevance score
+            relevance = 0
+            if query_lower in name:
+                relevance += 10
+            if query_lower in description:
+                relevance += 5
+            if query_lower in display:
+                relevance += 3
+            
+            # Also check for word matches
+            query_words = query_lower.split()
+            for word in query_words:
+                if len(word) > 2:  # Skip very short words
+                    if word in name:
+                        relevance += 2
+                    if word in description:
+                        relevance += 1
+            
+            if relevance > 0:
+                matches.append({
+                    **script,
+                    "relevance": relevance
+                })
+        
+        # Sort by relevance
+        matches.sort(key=lambda x: x["relevance"], reverse=True)
+        
+        # Remove relevance score from output (internal use only)
+        for match in matches:
+            match.pop("relevance", None)
+        
+        return {
+            "success": True,
+            "query": query,
+            "count": len(matches),
+            "matches": matches
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def execute_custom_script(script_id: int, data: Optional[Dict[str, Any]] = None, commit: bool = True) -> Dict[str, Any]:
+    """
+    Execute a NetBox custom script by ID.
+    
+    Custom scripts are Python-based workflows that can perform complex operations
+    like creating sites with all necessary components, bulk device provisioning,
+    IP address allocation workflows, or compliance automation.
+    
+    To find script IDs and required parameters, first call get_custom_scripts().
+    
+    Args:
+        script_id: Script ID from get_custom_scripts() (e.g., 17 for "CreateSiteAndLocations")
+        data: Dictionary of parameters required by the script (must match script's "vars")
+        commit: Whether to commit changes (default: True, use False for dry-run)
+    
+    Returns:
+        Dict with success status and job information for tracking execution
+    
+    Example:
+        # First, get available scripts to find the ID
+        scripts = get_custom_scripts()
+        # Find the script you want (e.g., CreateSiteAndLocations)
+        
+        # Execute the site creation workflow
+        result = execute_custom_script(
+            script_id=17,
+            data={
+                "tenant": 1,              # Tenant ID
+                "region": 2,              # Region ID  
+                "site_name": "DC-East-01",
+                "address": "123 Main St",
+                "number_of_floors": 3,
+                "lowest_floor": 0
+            },
+            commit=True
+        )
+        
+        # Check execution status
+        job_id = result["job_id"]
+        status = get_script_job_status(job_id)
+    """
+    try:
+        # Build the script execution payload
+        payload = {
+            "data": data or {},
+            "commit": commit
+        }
+        
+        # Execute the script via POST to extras/scripts/{id}/
+        result = client.create(f"extras/scripts/{script_id}", payload)
+        
+        # Extract job information from response
+        job_info = None
+        job_id = None
+        
+        if isinstance(result, dict):
+            if "job" in result:
+                job_info = result["job"]
+                job_id = job_info.get("id") if isinstance(job_info, dict) else None
+            elif "id" in result:
+                # Sometimes the job info is at the top level
+                job_id = result.get("id")
+        
+        return {
+            "success": True,
+            "message": "Script execution started successfully",
+            "script_id": script_id,
+            "job_id": job_id,
+            "job_info": job_info,
+            "data": result
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to execute script {script_id}. Check that script ID is valid and all required parameters are provided."
+        }
+
+@mcp.tool()
+def get_script_job_status(job_id: int) -> Dict[str, Any]:
+    """
+    Get the status and results of a custom script execution job.
+    
+    After executing a custom script, use this to check if it completed successfully,
+    retrieve output logs, and see any errors that occurred.
+    
+    Args:
+        job_id: The job ID returned from execute_custom_script()
+    
+    Returns:
+        Dict with job status, completion state, logs, and results
+    
+    Example:
+        # Check if script completed
+        status = get_script_job_status(job_id=42)
+        print(status["data"]["status"])  # completed, pending, running, failed
+    """
+    try:
+        job = client.get("core/jobs", id=job_id)
+        return {
+            "success": True,
+            "data": job,
+            "status": job.get("status", {}).get("value") if isinstance(job, dict) else None,
+            "completed": job.get("completed") if isinstance(job, dict) else None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def list_script_jobs(limit: int = 50, script_name: Optional[str] = None) -> Dict[str, Any]:
+    """
+    List recent custom script execution jobs.
+    
+    View history of script executions, their status, and when they ran.
+    Useful for tracking automation workflows and troubleshooting failures.
+    
+    Args:
+        limit: Maximum number of jobs to return (default: 50)
+        script_name: Optional filter by specific script name
+    
+    Returns:
+        Dict with list of recent script execution jobs
+    """
+    try:
+        params = {"limit": limit, "object_type": "extras.script"}
+        if script_name:
+            params["name"] = script_name
+        
+        jobs = client.get("core/jobs", params=params)
+        return {"success": True, "data": jobs}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # MCP server instance was created early in the file with decorators handling tool registration
 
 # ---- Server Startup ----
 if __name__ == "__main__":
     print(f"🚀 NetBox MCP Server starting...")
     print(f"🔗 NetBox URL: {netbox_url}")
-    print(f"🛠️  Available tools: 14 (DCIM, IPAM, CRUD operations)")
+    print(f"🛠️  Available tools: 19 (DCIM, IPAM, Custom Scripts, CRUD operations)")
     print(f"🌐 Server starting on: http://{mcp_host}:{mcp_port}")
     print(f"🔗 HTTP endpoint: http://{mcp_host}:{mcp_port}")
     print(f"✅ Server ready for MCP client connections via HTTP.")
@@ -394,6 +665,7 @@ if __name__ == "__main__":
     print(f"   🌐 IPAM: IP Addresses, Prefixes, VLANs")
     print(f"   🔍 Search & Query: Universal search across objects")
     print(f"   ✏️  CRUD: Create, Read, Update, Delete operations")
+    print(f"   🔧 Custom Scripts: Discover and execute workflows via natural language")
     
     # Start the MCP server in HTTP mode
     try:

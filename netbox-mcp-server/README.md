@@ -8,12 +8,21 @@ This MCP server provides **complete** API-based access to NetBox capabilities, e
 
 - **DCIM (Data Center Infrastructure Management)**: Complete facility, rack, and device management
 - **IPAM (IP Address Management)**: IP address spaces, prefixes, and VLAN management
+- **Custom Scripts & Workflows**: Execute complex automation workflows via natural language 🆕
 - **Device Lifecycle Management**: Hardware inventory, device types, and lifecycle tracking
 - **Network Documentation**: Comprehensive network topology and connection documentation
 - **Cable Management**: Physical and logical connection tracking
 - **Custom Fields**: Extensible data model with custom attributes
 - **Multi-Tenancy**: Organization and tenant-based resource separation
 - **HTTP Transport**: Modern MCP transport for MCP clients (Cursor, LibreChat, etc.)
+
+### 🆕 Custom Scripts Support
+
+This server now supports **NetBox Custom Scripts**, enabling:
+- ✅ **Natural Language Workflow Execution**: "Run workflow to create a new site"
+- ✅ **Script Discovery**: AI automatically finds the right script based on descriptions
+- ✅ **Complex Automation**: Site provisioning, device onboarding, IP allocation workflows
+- ✅ **Job Tracking**: Monitor script execution status and retrieve results
 
 ## Features
 
@@ -44,6 +53,13 @@ This MCP server provides **complete** API-based access to NetBox capabilities, e
 - **`get_cables`**: List physical cable connections
 - **`get_connections`**: List logical network connections
 - **`get_circuits`**: List WAN circuits and provider connections
+
+**Custom Scripts & Automation:**
+- **`get_custom_scripts`**: List all available custom scripts and workflows
+- **`find_custom_script`**: Search for scripts by natural language description
+- **`execute_custom_script`**: Run custom scripts with parameters
+- **`get_script_job_status`**: Check script execution status and results
+- **`list_script_jobs`**: View history of script executions
 
 **Documentation & Reporting:**
 - **`search_objects`**: Universal search across all NetBox objects
@@ -108,6 +124,87 @@ MCP_PORT=8001                               # Port for MCP server (default: 8001
    - **Read**: For monitoring and documentation
    - **Write**: For device provisioning and updates
    - **Delete**: For cleanup operations (use carefully)
+
+## Custom Scripts & Workflow Automation
+
+The NetBox MCP Server supports **NetBox Custom Scripts**, enabling you to execute complex workflows through natural language prompts.
+
+### How It Works
+
+1. **NetBox Custom Scripts** are Python-based workflows stored in NetBox (`/opt/netbox/scripts/`)
+2. Each script has a **name** and **description** that the AI can understand
+3. You can ask the AI to run workflows in natural language
+4. The AI discovers the appropriate script and executes it with parameters
+
+### Example Workflow
+
+**User**: "Run workflow to create a new site called DC-East-01"
+
+**AI Process**:
+1. Calls `get_custom_scripts()` to discover available workflows
+2. Finds a script matching "create site" in description
+3. Executes `execute_custom_script()` with appropriate parameters
+4. Monitors execution with `get_script_job_status()`
+5. Reports results back to user
+
+### Common Use Cases
+
+**Site Provisioning Workflows:**
+- Create site with VLANs, prefixes, and device racks
+- Configure standard site topology
+- Set up management networks and IP addressing
+
+**Device Onboarding:**
+- Bulk device provisioning with standard configurations
+- IP address allocation for new devices
+- Cable and connection documentation
+
+**IP Management Workflows:**
+- Allocate IP blocks for new sites
+- Reserve IP ranges for specific purposes
+- Validate IP addressing schemes
+
+**Compliance & Auditing:**
+- Run compliance checks across infrastructure
+- Generate audit reports
+- Validate configurations against standards
+
+### Script Discovery
+
+The AI can intelligently match your natural language requests to scripts using `find_custom_script()`:
+
+| Your Request | Matched Script | Script ID |
+|--------------|----------------|-----------|
+| "Create a new site with floors" | `CreateSiteAndLocations` | 17 |
+| "Add switches to site" | `AddSwitchesToSite` | 18 |
+| "Create IP addresses" | `CreateIps` | 16 |
+
+**Example workflow:**
+```python
+# User: "Run workflow to create a new site"
+# AI process:
+matches = find_custom_script("create site")
+# Returns: CreateSiteAndLocations (ID 17)
+
+# AI then executes with user-provided parameters
+result = execute_custom_script(
+    script_id=17,
+    data={"site_name": "DC-East-01", ...}
+)
+```
+
+### Requirements
+
+**NetBox Configuration:**
+1. Custom scripts must be installed in NetBox (`/opt/netbox/scripts/`)
+2. Scripts must be properly registered and available via the API
+3. API token must have permissions to execute scripts
+
+**Script Best Practices:**
+- Add clear descriptions to scripts for AI discovery
+- Use descriptive parameter names
+- Include validation and error handling
+- Document expected inputs and outputs
 
 ## Usage Examples
 
@@ -186,6 +283,50 @@ device_types = get_device_types()
 
 # Get manufacturer information
 manufacturers = get_manufacturers()
+```
+
+### Custom Scripts & Workflows
+
+```python
+# Method 1: Natural language search (AI-friendly)
+matches = find_custom_script("create site")
+# Returns scripts matching "create site" in name/description
+
+# Method 2: List all available scripts
+scripts = get_custom_scripts()
+for script in scripts["data"]:
+    print(f"ID: {script['id']}")
+    print(f"Name: {script['name']}")
+    print(f"Description: {script['description']}")
+    print(f"Required vars: {script['vars']}")
+    print()
+
+# Execute a site provisioning workflow
+# Example: CreateSiteAndLocations (script ID 17)
+job_result = execute_custom_script(
+    script_id=17,
+    data={
+        "tenant": 1,                    # Tenant object ID
+        "region": 2,                    # Region object ID
+        "site_name": "DC-West-01",      # String
+        "address": "123 Data Center Dr", # String
+        "number_of_floors": 3,          # Integer
+        "lowest_floor": 0               # Integer
+    },
+    commit=True
+)
+
+# Check if script completed successfully
+if job_result["success"]:
+    job_id = job_result["job_id"]
+    status = get_script_job_status(job_id=job_id)
+    
+    print(f"Status: {status['status']}")  # completed, pending, running, failed
+    print(f"Completed: {status['completed']}")
+    print(f"Output: {status['data']}")
+
+# View recent script executions
+recent_jobs = list_script_jobs(limit=10)
 ```
 
 ## Docker Deployment
