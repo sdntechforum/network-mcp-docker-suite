@@ -1018,11 +1018,235 @@ def list_script_jobs(limit: int = 50, script_name: Optional[str] = None) -> Dict
 
 # MCP server instance was created early in the file with decorators handling tool registration
 
+# ---- Dynamic Custom Script Tool Registration ----
+def register_custom_scripts_as_tools():
+    """
+    Fetch NetBox custom scripts at startup and register each as a dynamic MCP tool.
+    
+    This transforms each custom script into a first-class MCP tool, making them
+    immediately discoverable and usable by AI agents without multi-step workflows.
+    
+    Example:
+        Instead of: find_custom_script() → get_script_variables() → execute_custom_script()
+        Agent sees: create_site_and_locations(tenant_id, region_id, site_name, ...)
+    """
+    try:
+        print("🔄 Fetching custom scripts from NetBox...")
+        response = client.get("extras/scripts")
+        
+        # Parse response
+        if isinstance(response, list):
+            scripts = response
+        elif isinstance(response, dict) and 'results' in response:
+            scripts = response['results']
+        else:
+            print("⚠️  No custom scripts found")
+            return 0
+        
+        registered_count = 0
+        
+        for script in scripts:
+            if not script.get("is_executable"):
+                continue
+                
+            script_id = script["id"]
+            script_name = script["name"]
+            script_description = script.get("description", f"NetBox custom script: {script_name}")
+            script_vars = script.get("vars", {})
+            
+            # Convert script name to valid Python function name
+            # "CreateSiteAndLocations" → "create_site_and_locations"
+            tool_name = _to_snake_case(script_name)
+            
+            # Create the dynamic tool function
+            dynamic_tool = _create_script_tool(
+                script_id=script_id,
+                script_name=script_name,
+                tool_name=tool_name,
+                description=script_description,
+                variables=script_vars
+            )
+            
+            # Register the tool with FastMCP
+            mcp.tool()(dynamic_tool)
+            
+            registered_count += 1
+            print(f"   ✅ Registered: {tool_name}()")
+        
+        print(f"✨ Registered {registered_count} custom scripts as dynamic tools")
+        return registered_count
+        
+    except Exception as e:
+        print(f"⚠️  Warning: Could not register custom scripts as tools: {e}")
+        print(f"   Custom scripts can still be used via execute_custom_script()")
+        return 0
+
+
+def _to_snake_case(name: str) -> str:
+    """Convert CamelCase or PascalCase to snake_case."""
+    import re
+    # Insert underscore before uppercase letters
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    # Insert underscore before uppercase letters that follow lowercase
+    s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+    return s2.lower()
+
+
+def _create_script_tool(script_id: int, script_name: str, tool_name: str, 
+                        description: str, variables: Dict[str, str]):
+    """
+    Create a dynamic tool function for a custom script.
+    
+    This generates a function with proper parameter hints and descriptions
+    based on the script's variable definitions.
+    """
+    # Build parameter documentation
+    param_docs = []
+    param_hints = {}
+    
+    for var_name, var_type in variables.items():
+        if var_type == "ObjectVar":
+            # Determine the endpoint from variable name
+            endpoint = _guess_endpoint_from_var_name(var_name)
+            param_docs.append(
+                f"        {var_name} (int): {var_name.replace('_', ' ').title()} ID. "
+                f"Use get_object_choices('{endpoint}') to see available options."
+            )
+            param_hints[var_name] = int
+        elif var_type == "StringVar":
+            param_docs.append(
+                f"        {var_name} (str): {var_name.replace('_', ' ').title()} as text"
+            )
+            param_hints[var_name] = str
+        elif var_type == "IntegerVar":
+            param_docs.append(
+                f"        {var_name} (int): {var_name.replace('_', ' ').title()} as integer"
+            )
+            param_hints[var_name] = int
+        elif var_type == "BooleanVar":
+            param_docs.append(
+                f"        {var_name} (bool): {var_name.replace('_', ' ').title()} as boolean"
+            )
+            param_hints[var_name] = bool
+        else:
+            param_docs.append(
+                f"        {var_name}: {var_name.replace('_', ' ').title()}"
+            )
+            param_hints[var_name] = Any
+    
+    param_doc_str = "\n".join(param_docs) if param_docs else "        (no parameters)"
+    
+    # Create the dynamic function
+    def dynamic_script_tool(**kwargs) -> Dict[str, Any]:
+        f"""
+        {description}
+        
+        NetBox Custom Script: {script_name}
+        Script ID: {script_id}
+        
+        Args:
+{param_doc_str}
+        
+        Returns:
+            Dict with execution result and job information
+        
+        Example:
+            # This is a dynamically generated tool from NetBox custom script
+            # It executes the script with the provided parameters
+            result = {tool_name}(...)
+        """
+        # Execute the script
+        try:
+            result = client.post(f"extras/scripts/{script_id}/", json={
+                "data": kwargs,
+                "commit": True
+            })
+            
+            job_url = result.get("result", {}).get("url", "")
+            job_id = job_url.split("/")[-2] if job_url else None
+            
+            return {
+                "success": True,
+                "script_id": script_id,
+                "script_name": script_name,
+                "job_url": job_url,
+                "job_id": job_id,
+                "result": result,
+                "message": f"Script '{script_name}' executed successfully. Use get_script_job_status('{job_id}') to check status."
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "script_id": script_id,
+                "script_name": script_name
+            }
+    
+    # Set the function name and docstring
+    dynamic_script_tool.__name__ = tool_name
+    dynamic_script_tool.__doc__ = f"""
+{description}
+
+NetBox Custom Script: {script_name}
+
+Parameters:
+{param_doc_str}
+
+This is a dynamically generated tool. The script is executed in NetBox with the provided parameters.
+"""
+    
+    return dynamic_script_tool
+
+
+def _guess_endpoint_from_var_name(var_name: str) -> str:
+    """Guess the NetBox API endpoint from a variable name."""
+    # Common mappings
+    endpoint_map = {
+        "tenant": "tenancy/tenants",
+        "region": "dcim/regions",
+        "site": "dcim/sites",
+        "location": "dcim/locations",
+        "device": "dcim/devices",
+        "device_type": "dcim/device-types",
+        "device_role": "dcim/device-roles",
+        "rack": "dcim/racks",
+        "vlan": "ipam/vlans",
+        "vrf": "ipam/vrfs",
+        "prefix": "ipam/prefixes",
+        "ip_address": "ipam/ip-addresses",
+        "interface": "dcim/interfaces",
+        "cable": "dcim/cables",
+        "circuit": "circuits/circuits",
+        "provider": "circuits/providers",
+    }
+    
+    var_lower = var_name.lower()
+    
+    # Check for exact matches first
+    if var_lower in endpoint_map:
+        return endpoint_map[var_lower]
+    
+    # Check for partial matches
+    for key, endpoint in endpoint_map.items():
+        if key in var_lower:
+            return endpoint
+    
+    # Default fallback
+    return f"dcim/{var_name.lower()}s"
+
+
 # ---- Server Startup ----
 if __name__ == "__main__":
     print(f"🚀 NetBox MCP Server starting...")
     print(f"🔗 NetBox URL: {netbox_url}")
-    print(f"🛠️  Available tools: 23 (DCIM, IPAM, Custom Scripts, CRUD operations)")
+    
+    # Register custom scripts as dynamic tools
+    dynamic_tools_count = register_custom_scripts_as_tools()
+    
+    # Calculate total tools (23 base tools + dynamic custom script tools)
+    total_tools = 23 + dynamic_tools_count
+    
+    print(f"🛠️  Available tools: {total_tools} ({dynamic_tools_count} dynamic custom scripts + 23 base tools)")
     print(f"🌐 Server starting on: http://{mcp_host}:{mcp_port}")
     print(f"🔗 HTTP endpoint: http://{mcp_host}:{mcp_port}")
     print(f"✅ Server ready for MCP client connections via HTTP.")
@@ -1032,7 +1256,7 @@ if __name__ == "__main__":
     print(f"   🌐 IPAM: IP Addresses, Prefixes, VLANs")
     print(f"   🔍 Search & Query: Universal search across objects")
     print(f"   ✏️  CRUD: Create, Read, Update, Delete operations")
-    print(f"   🔧 Custom Scripts: AI-driven workflows with variable descriptions")
+    print(f"   🔧 Custom Scripts: {dynamic_tools_count} dynamically registered + generic execution tools")
     
     # Start the MCP server in HTTP mode
     try:
