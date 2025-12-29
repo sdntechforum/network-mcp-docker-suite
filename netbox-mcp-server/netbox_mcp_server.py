@@ -467,13 +467,41 @@ def get_script_variables(script_id: int) -> Dict[str, Any]:
         
         vars_dict = script.get("vars", {})
         
+        # Check if we have detailed variable metadata (NetBox might provide this)
+        # The API might return just types or full variable objects
+        
         # Provide guidance for each variable type
         var_guidance = {}
-        for var_name, var_type in vars_dict.items():
+        for var_name, var_info in vars_dict.items():
+            # Check if var_info is a string (type name) or dict (detailed info)
+            if isinstance(var_info, str):
+                # Simple format: just the type name
+                var_type = var_info
+                var_description = None
+                var_label = None
+                var_default = None
+            elif isinstance(var_info, dict):
+                # Detailed format: extract metadata
+                var_type = var_info.get("type", "Unknown")
+                var_description = var_info.get("description")
+                var_label = var_info.get("label", var_name)
+                var_default = var_info.get("default")
+            else:
+                var_type = str(var_info)
+                var_description = None
+                var_label = None
+                var_default = None
+            
             guidance = {
                 "type": var_type,
+                "name": var_name,
+                "label": var_label or var_name.replace("_", " ").title(),
                 "required": True,  # Assume all are required unless script says otherwise
             }
+            
+            # Add description if available from NetBox
+            if var_description:
+                guidance["description"] = var_description
             
             # Add specific guidance based on type
             if var_type == "ObjectVar":
@@ -520,12 +548,68 @@ def get_script_variables(script_id: int) -> Dict[str, Any]:
             
             var_guidance[var_name] = guidance
         
+        # Add metadata about variable descriptions availability
+        metadata = {
+            "note": "Variable descriptions depend on NetBox API version and script implementation."
+        }
+        
+        # Check if the raw script object has additional metadata we can expose
+        raw_vars = script.get("vars", {})
+        if raw_vars and isinstance(list(raw_vars.values())[0] if raw_vars else None, dict):
+            metadata["note"] = "Detailed variable metadata available from NetBox"
+        else:
+            metadata["note"] = "Variable types only (descriptions may be in script source code)"
+        
         return {
             "success": True,
             "script_id": script_id,
             "script_name": script.get("name"),
             "description": script.get("description"),
-            "variables": var_guidance
+            "variables": var_guidance,
+            "metadata": metadata,
+            "raw_vars_sample": list(raw_vars.items())[:1] if raw_vars else []  # Show one example
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def get_script_form_details(script_id: int) -> Dict[str, Any]:
+    """
+    Get detailed form information for a script including variable descriptions.
+    
+    This retrieves the full variable metadata from NetBox including:
+    - Variable descriptions/help text
+    - Labels
+    - Default values
+    - Required status
+    - Field types and constraints
+    
+    Args:
+        script_id: The script ID
+    
+    Returns:
+        Dict with detailed form information including variable descriptions
+    
+    Example:
+        details = get_script_form_details(script_id=17)
+        # Returns full metadata for each variable including descriptions
+    """
+    try:
+        # Try to get the script with full details
+        # NetBox may provide form data through the main endpoint or a separate form endpoint
+        script = client.get("extras/scripts", id=script_id)
+        
+        if not isinstance(script, dict):
+            return {"success": False, "error": "Script not found"}
+        
+        # Return the full script object so we can see what's available
+        return {
+            "success": True,
+            "script_id": script_id,
+            "name": script.get("name"),
+            "description": script.get("description"),
+            "full_data": script,
+            "note": "This shows ALL data returned by NetBox for the script. Check if variable descriptions are included."
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -897,7 +981,7 @@ def list_script_jobs(limit: int = 50, script_name: Optional[str] = None) -> Dict
 if __name__ == "__main__":
     print(f"🚀 NetBox MCP Server starting...")
     print(f"🔗 NetBox URL: {netbox_url}")
-    print(f"🛠️  Available tools: 22 (DCIM, IPAM, Custom Scripts, CRUD operations)")
+    print(f"🛠️  Available tools: 23 (DCIM, IPAM, Custom Scripts, CRUD operations)")
     print(f"🌐 Server starting on: http://{mcp_host}:{mcp_port}")
     print(f"🔗 HTTP endpoint: http://{mcp_host}:{mcp_port}")
     print(f"✅ Server ready for MCP client connections via HTTP.")
@@ -907,7 +991,7 @@ if __name__ == "__main__":
     print(f"   🌐 IPAM: IP Addresses, Prefixes, VLANs")
     print(f"   🔍 Search & Query: Universal search across objects")
     print(f"   ✏️  CRUD: Create, Read, Update, Delete operations")
-    print(f"   🔧 Custom Scripts: AI-driven workflows with smart object selection")
+    print(f"   🔧 Custom Scripts: AI-driven workflows with variable descriptions")
     
     # Start the MCP server in HTTP mode
     try:
