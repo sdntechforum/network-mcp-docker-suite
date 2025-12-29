@@ -1095,107 +1095,114 @@ def _to_snake_case(name: str) -> str:
 def _create_script_tool(script_id: int, script_name: str, tool_name: str, 
                         description: str, variables: Dict[str, str]):
     """
-    Create a dynamic tool function for a custom script.
+    Create a dynamic tool function for a custom script with explicit parameters.
     
-    This generates a function with proper parameter hints and descriptions
-    based on the script's variable definitions.
+    FastMCP requires explicit parameters (not **kwargs), so we generate the function
+    dynamically using exec() with the correct signature.
     """
-    # Build parameter documentation
+    # Build parameter list and documentation
+    param_list = []
     param_docs = []
-    param_hints = {}
+    type_hints = {}
     
     for var_name, var_type in variables.items():
         if var_type == "ObjectVar":
-            # Determine the endpoint from variable name
             endpoint = _guess_endpoint_from_var_name(var_name)
+            param_list.append(f"{var_name}: int")
             param_docs.append(
                 f"        {var_name} (int): {var_name.replace('_', ' ').title()} ID. "
                 f"Use get_object_choices('{endpoint}') to see available options."
             )
-            param_hints[var_name] = int
+            type_hints[var_name] = int
         elif var_type == "StringVar":
+            param_list.append(f"{var_name}: str")
             param_docs.append(
                 f"        {var_name} (str): {var_name.replace('_', ' ').title()} as text"
             )
-            param_hints[var_name] = str
+            type_hints[var_name] = str
         elif var_type == "IntegerVar":
+            param_list.append(f"{var_name}: int")
             param_docs.append(
                 f"        {var_name} (int): {var_name.replace('_', ' ').title()} as integer"
             )
-            param_hints[var_name] = int
+            type_hints[var_name] = int
         elif var_type == "BooleanVar":
+            param_list.append(f"{var_name}: bool")
             param_docs.append(
                 f"        {var_name} (bool): {var_name.replace('_', ' ').title()} as boolean"
             )
-            param_hints[var_name] = bool
+            type_hints[var_name] = bool
         else:
+            param_list.append(f"{var_name}")
             param_docs.append(
                 f"        {var_name}: {var_name.replace('_', ' ').title()}"
             )
-            param_hints[var_name] = Any
     
+    param_signature = ", ".join(param_list) if param_list else ""
     param_doc_str = "\n".join(param_docs) if param_docs else "        (no parameters)"
     
-    # Create the dynamic function
-    def dynamic_script_tool(**kwargs) -> Dict[str, Any]:
-        f"""
-        {description}
-        
-        NetBox Custom Script: {script_name}
-        Script ID: {script_id}
-        
-        Args:
-{param_doc_str}
-        
-        Returns:
-            Dict with execution result and job information
-        
-        Example:
-            # This is a dynamically generated tool from NetBox custom script
-            # It executes the script with the provided parameters
-            result = {tool_name}(...)
-        """
-        # Execute the script
-        try:
-            result = client.post(f"extras/scripts/{script_id}/", json={
-                "data": kwargs,
-                "commit": True
-            })
-            
-            job_url = result.get("result", {}).get("url", "")
-            job_id = job_url.split("/")[-2] if job_url else None
-            
-            return {
-                "success": True,
-                "script_id": script_id,
-                "script_name": script_name,
-                "job_url": job_url,
-                "job_id": job_id,
-                "result": result,
-                "message": f"Script '{script_name}' executed successfully. Use get_script_job_status('{job_id}') to check status."
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "script_id": script_id,
-                "script_name": script_name
-            }
-    
-    # Set the function name and docstring
-    dynamic_script_tool.__name__ = tool_name
-    dynamic_script_tool.__doc__ = f"""
-{description}
+    # Build the docstring
+    docstring = f'''"""{description}
 
 NetBox Custom Script: {script_name}
+Script ID: {script_id}
 
 Parameters:
 {param_doc_str}
 
-This is a dynamically generated tool. The script is executed in NetBox with the provided parameters.
-"""
+Returns:
+    Dict with execution result and job information
+
+Example:
+    # This is a dynamically generated tool from NetBox custom script
+    result = {tool_name}(...)
+"""'''
     
-    return dynamic_script_tool
+    # Create parameter names for kwargs dict
+    param_names = list(variables.keys())
+    param_dict_items = ", ".join([f'"{name}": {name}' for name in param_names])
+    
+    # Generate the function code dynamically
+    func_code = f'''
+def {tool_name}({param_signature}) -> Dict[str, Any]:
+    {docstring}
+    try:
+        data = {{{param_dict_items}}} if {bool(param_names)} else {{}}
+        result = client.post(f"extras/scripts/{script_id}/", json={{
+            "data": data,
+            "commit": True
+        }})
+        
+        job_url = result.get("result", {{}}).get("url", "")
+        job_id = job_url.split("/")[-2] if job_url else None
+        
+        return {{
+            "success": True,
+            "script_id": {script_id},
+            "script_name": "{script_name}",
+            "job_url": job_url,
+            "job_id": job_id,
+            "result": result,
+            "message": f"Script '{script_name}' executed successfully. Use get_script_job_status('{{job_id}}') to check status."
+        }}
+    except Exception as e:
+        return {{
+            "success": False,
+            "error": str(e),
+            "script_id": {script_id},
+            "script_name": "{script_name}"
+        }}
+'''
+    
+    # Execute the function definition
+    namespace = {
+        "Dict": Dict,
+        "Any": Any,
+        "client": client,
+    }
+    exec(func_code, namespace)
+    
+    return namespace[tool_name]
 
 
 def _guess_endpoint_from_var_name(var_name: str) -> str:
