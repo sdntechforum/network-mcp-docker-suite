@@ -504,47 +504,67 @@ def get_script_variables(script_id: int) -> Dict[str, Any]:
                 guidance["description"] = var_description
             
             # Add specific guidance based on type
+            # Make this guidance PROMINENT so AI shows it to user
             if var_type == "ObjectVar":
                 # Suggest which tool to use to find the object ID
                 if "tenant" in var_name.lower():
-                    guidance["help"] = "Use get_object_choices('dcim/tenants') to list all tenants"
                     guidance["endpoint"] = "dcim/tenants"
-                    guidance["example"] = "Show user list of tenants and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available tenants"
+                    if not var_description:
+                        guidance["description"] = "Choose the tenant that owns this resource"
                 elif "region" in var_name.lower():
-                    guidance["help"] = "Use get_object_choices('dcim/regions') to list all regions"
                     guidance["endpoint"] = "dcim/regions"
-                    guidance["example"] = "Show user list of regions and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available regions"
+                    if not var_description:
+                        guidance["description"] = "Choose the geographic region"
                 elif "site" in var_name.lower():
-                    guidance["help"] = "Use get_object_choices('dcim/sites') to list all sites"
                     guidance["endpoint"] = "dcim/sites"
-                    guidance["example"] = "Show user list of sites and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available sites"
+                    if not var_description:
+                        guidance["description"] = "Choose the site location"
                 elif "device" in var_name.lower():
-                    guidance["help"] = "Use get_object_choices('dcim/devices') to list all devices"
                     guidance["endpoint"] = "dcim/devices"
-                    guidance["example"] = "Show user list of devices and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available devices"
+                    if not var_description:
+                        guidance["description"] = "Choose the device"
                 elif "role" in var_name.lower():
-                    guidance["help"] = "Use get_object_choices('dcim/device-roles') to list all device roles"
                     guidance["endpoint"] = "dcim/device-roles"
-                    guidance["example"] = "Show user list of device roles and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available roles"
+                    if not var_description:
+                        guidance["description"] = "Choose the device role (e.g., access, core, distribution)"
                 elif "type" in var_name.lower():
-                    guidance["help"] = "Use get_object_choices('dcim/device-types') to list all device types"
                     guidance["endpoint"] = "dcim/device-types"
-                    guidance["example"] = "Show user list of device types and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available device types"
+                    if not var_description:
+                        guidance["description"] = "Choose the device model/type"
                 else:
-                    guidance["help"] = f"Use get_object_choices() to list available {var_name} objects"
-                    guidance["example"] = "Show user list of options and let them choose"
+                    guidance["prompt"] = f"{guidance['label']}: Select from available options"
+                    if not var_description:
+                        guidance["description"] = f"Choose the {var_name.replace('_', ' ')}"
+                
+                guidance["instruction"] = f"Use get_object_choices('{guidance.get('endpoint', 'unknown')}') to show user the list"
+                
             elif var_type == "StringVar":
-                guidance["help"] = "Provide as a string value"
-                guidance["example"] = f'"example_{var_name}"'
+                guidance["prompt"] = f"{guidance['label']}: Enter text"
+                if not var_description:
+                    guidance["description"] = f"Provide a text value for {var_name.replace('_', ' ')}"
+                guidance["example"] = f"e.g., 'DC-01', 'Building-A'"
+                
             elif var_type == "IntegerVar":
-                guidance["help"] = "Provide as an integer value"
-                guidance["example"] = "10"
+                guidance["prompt"] = f"{guidance['label']}: Enter a number"
+                if not var_description:
+                    guidance["description"] = f"Provide a numeric value for {var_name.replace('_', ' ')}"
+                guidance["example"] = "e.g., 3, 10, 100"
+                
             elif var_type == "BooleanVar":
-                guidance["help"] = "Provide as true or false"
-                guidance["example"] = "true"
+                guidance["prompt"] = f"{guidance['label']}: Yes or No"
+                if not var_description:
+                    guidance["description"] = "Choose true or false"
+                guidance["example"] = "true or false"
             else:
-                guidance["help"] = f"Provide value for {var_type}"
-                guidance["example"] = "See NetBox documentation"
+                guidance["prompt"] = f"{guidance['label']}: Provide value"
+                if not var_description:
+                    guidance["description"] = f"Provide value for {var_type}"
             
             var_guidance[var_name] = guidance
         
@@ -560,14 +580,32 @@ def get_script_variables(script_id: int) -> Dict[str, Any]:
         else:
             metadata["note"] = "Variable types only (descriptions may be in script source code)"
         
+        # Create a user-friendly prompt format that AI should show to users
+        user_prompt = []
+        for var_name, var_info in var_guidance.items():
+            prompt_line = f"**{var_info.get('label', var_name)}**"
+            if var_info.get('description'):
+                prompt_line += f": {var_info['description']}"
+            else:
+                prompt_line += f": {var_info.get('prompt', 'Enter value')}"
+            
+            if var_info.get('example'):
+                prompt_line += f" ({var_info['example']})"
+            
+            if var_info['type'] == 'ObjectVar' and var_info.get('endpoint'):
+                prompt_line += f" [Use get_object_choices('{var_info['endpoint']}')]"
+            
+            user_prompt.append(prompt_line)
+        
         return {
             "success": True,
             "script_id": script_id,
             "script_name": script.get("name"),
             "description": script.get("description"),
             "variables": var_guidance,
+            "user_friendly_prompts": user_prompt,
             "metadata": metadata,
-            "raw_vars_sample": list(raw_vars.items())[:1] if raw_vars else []  # Show one example
+            "instruction_to_ai": "Present the 'user_friendly_prompts' to the user. For ObjectVar types, call get_object_choices() to show available options before asking user to choose."
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -767,13 +805,16 @@ def find_custom_script(query: str) -> Dict[str, Any]:
         # - ProvisionNewSite: "Provision a complete site with VLANs and IP space"
     """
     try:
-        # Get all scripts
-        all_scripts_result = get_custom_scripts()
+        # Get all scripts directly (can't call other MCP tools from within a tool)
+        response = client.get("extras/scripts")
         
-        if not all_scripts_result.get("success"):
-            return all_scripts_result
-        
-        all_scripts = all_scripts_result.get("data", [])
+        # Format the response
+        if isinstance(response, list):
+            all_scripts = response
+        elif isinstance(response, dict) and 'results' in response:
+            all_scripts = response['results']
+        else:
+            return {"success": False, "error": "No scripts found"}
         query_lower = query.lower()
         
         # Search in name and description
