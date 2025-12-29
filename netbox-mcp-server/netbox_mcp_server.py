@@ -1099,6 +1099,8 @@ def _create_script_tool(script_id: int, script_name: str, tool_name: str,
     
     FastMCP requires explicit parameters (not **kwargs), so we generate the function
     dynamically using exec() with the correct signature.
+    
+    Generates intelligent parameter descriptions based on variable names and types.
     """
     # Build parameter list and documentation
     param_list = []
@@ -1106,36 +1108,33 @@ def _create_script_tool(script_id: int, script_name: str, tool_name: str,
     type_hints = {}
     
     for var_name, var_type in variables.items():
+        # Generate intelligent description from variable name
+        var_label = var_name.replace('_', ' ').title()
+        
         if var_type == "ObjectVar":
             endpoint = _guess_endpoint_from_var_name(var_name)
             param_list.append(f"{var_name}: int")
             param_docs.append(
-                f"        {var_name} (int): {var_name.replace('_', ' ').title()} ID. "
+                f"        {var_name} (int): {var_label} ID. "
                 f"Use get_object_choices('{endpoint}') to see available options."
             )
             type_hints[var_name] = int
         elif var_type == "StringVar":
             param_list.append(f"{var_name}: str")
-            param_docs.append(
-                f"        {var_name} (str): {var_name.replace('_', ' ').title()} as text"
-            )
+            param_docs.append(f"        {var_name} (str): {var_label} as text")
             type_hints[var_name] = str
         elif var_type == "IntegerVar":
             param_list.append(f"{var_name}: int")
-            param_docs.append(
-                f"        {var_name} (int): {var_name.replace('_', ' ').title()} as integer"
-            )
+            param_docs.append(f"        {var_name} (int): {var_label} as integer")
             type_hints[var_name] = int
         elif var_type == "BooleanVar":
             param_list.append(f"{var_name}: bool")
-            param_docs.append(
-                f"        {var_name} (bool): {var_name.replace('_', ' ').title()} as boolean"
-            )
+            param_docs.append(f"        {var_name} (bool): {var_label} as boolean")
             type_hints[var_name] = bool
         else:
             param_list.append(f"{var_name}")
             param_docs.append(
-                f"        {var_name}: {var_name.replace('_', ' ').title()}"
+                f"        {var_name}: {var_label}"
             )
     
     param_signature = ", ".join(param_list) if param_list else ""
