@@ -57,6 +57,8 @@ This server now supports **NetBox Custom Scripts**, enabling:
 **Custom Scripts & Automation:**
 - **`get_custom_scripts`**: List all available custom scripts and workflows
 - **`find_custom_script`**: Search for scripts by natural language description
+- **`get_script_variables`**: Get detailed info about script parameters (especially ObjectVars)
+- **`search_for_object_id`**: Look up object IDs by name (for ObjectVar parameters)
 - **`execute_custom_script`**: Run custom scripts with parameters
 - **`get_script_job_status`**: Check script execution status and results
 - **`list_script_jobs`**: View history of script executions
@@ -132,20 +134,32 @@ The NetBox MCP Server supports **NetBox Custom Scripts**, enabling you to execut
 ### How It Works
 
 1. **NetBox Custom Scripts** are Python-based workflows stored in NetBox (`/opt/netbox/scripts/`)
-2. Each script has a **name** and **description** that the AI can understand
-3. You can ask the AI to run workflows in natural language
-4. The AI discovers the appropriate script and executes it with parameters
+2. Each script has a **name**, **description**, and **required variables (vars)**
+3. Variables can be:
+   - **ObjectVar**: Requires object ID (e.g., tenant_id, region_id, site_id)
+   - **StringVar**: Requires text string
+   - **IntegerVar**: Requires integer number
+   - **BooleanVar**: Requires true/false
+4. You can ask the AI to run workflows in natural language
+5. The AI automatically resolves ObjectVars by searching for objects and their IDs
 
 ### Example Workflow
 
-**User**: "Run workflow to create a new site called DC-East-01"
+**User**: "Run workflow to create a new site called DC-East-01 in the Acme Corp tenant"
 
 **AI Process**:
-1. Calls `get_custom_scripts()` to discover available workflows
-2. Finds a script matching "create site" in description
-3. Executes `execute_custom_script()` with appropriate parameters
-4. Monitors execution with `get_script_job_status()`
-5. Reports results back to user
+1. Calls `find_custom_script("create site")` to discover matching workflows
+2. Finds `CreateSiteAndLocations` (ID 17)
+3. Calls `get_script_variables(17)` to see it needs:
+   - `tenant` (ObjectVar) - needs tenant ID
+   - `region` (ObjectVar) - needs region ID
+   - `site_name` (StringVar) - "DC-East-01"
+   - `number_of_floors` (IntegerVar) - asks user or uses default
+4. Calls `search_for_object_id("dcim/tenants", "Acme Corp")` to get tenant ID
+5. Calls `search_for_object_id("dcim/regions", "Europe")` to get region ID (asks user if needed)
+6. Executes `execute_custom_script()` with all resolved parameters
+7. Monitors execution with `get_script_job_status()`
+8. Reports results back to user
 
 ### Common Use Cases
 
@@ -288,42 +302,51 @@ manufacturers = get_manufacturers()
 ### Custom Scripts & Workflows
 
 ```python
-# Method 1: Natural language search (AI-friendly)
+# COMPLETE WORKFLOW: Handling ObjectVar parameters
+
+# Step 1: Find the script you want to run
 matches = find_custom_script("create site")
-# Returns scripts matching "create site" in name/description
+script_id = matches["matches"][0]["id"]  # e.g., 17
 
-# Method 2: List all available scripts
-scripts = get_custom_scripts()
-for script in scripts["data"]:
-    print(f"ID: {script['id']}")
-    print(f"Name: {script['name']}")
-    print(f"Description: {script['description']}")
-    print(f"Required vars: {script['vars']}")
-    print()
+# Step 2: Get detailed information about required parameters
+vars_info = get_script_variables(script_id=17)
+print(vars_info["variables"])
+# Shows:
+#   tenant (ObjectVar) - needs tenant ID
+#   region (ObjectVar) - needs region ID
+#   site_name (StringVar) - provide as string
+#   number_of_floors (IntegerVar) - provide as integer
 
-# Execute a site provisioning workflow
-# Example: CreateSiteAndLocations (script ID 17)
+# Step 3: Resolve ObjectVar parameters (look up IDs by name)
+# Find tenant ID for "Acme Corp"
+tenant_result = search_for_object_id("dcim/tenants", "Acme Corp")
+tenant_id = tenant_result["matches"][0]["id"]  # e.g., 1
+
+# Find region ID for "Europe"
+region_result = search_for_object_id("dcim/regions", "Europe")
+region_id = region_result["matches"][0]["id"]  # e.g., 2
+
+# Step 4: Execute the script with all parameters
 job_result = execute_custom_script(
     script_id=17,
     data={
-        "tenant": 1,                    # Tenant object ID
-        "region": 2,                    # Region object ID
-        "site_name": "DC-West-01",      # String
-        "address": "123 Data Center Dr", # String
-        "number_of_floors": 3,          # Integer
-        "lowest_floor": 0               # Integer
+        "tenant": tenant_id,             # ObjectVar: Use ID (1)
+        "region": region_id,             # ObjectVar: Use ID (2)
+        "site_name": "DC-West-01",       # StringVar: String
+        "address": "123 Data Center Dr",  # StringVar: String
+        "number_of_floors": 3,           # IntegerVar: Integer
+        "lowest_floor": 0                # IntegerVar: Integer
     },
     commit=True
 )
 
-# Check if script completed successfully
+# Step 5: Monitor execution status
 if job_result["success"]:
     job_id = job_result["job_id"]
     status = get_script_job_status(job_id=job_id)
     
     print(f"Status: {status['status']}")  # completed, pending, running, failed
     print(f"Completed: {status['completed']}")
-    print(f"Output: {status['data']}")
 
 # View recent script executions
 recent_jobs = list_script_jobs(limit=10)

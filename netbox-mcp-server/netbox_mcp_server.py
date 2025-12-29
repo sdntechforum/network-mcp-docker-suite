@@ -437,6 +437,151 @@ def get_custom_scripts() -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 @mcp.tool()
+def get_script_variables(script_id: int) -> Dict[str, Any]:
+    """
+    Get detailed information about a script's required variables.
+    
+    This tool explains what each variable expects, especially for ObjectVar types
+    which require looking up object IDs before execution.
+    
+    Args:
+        script_id: The script ID
+    
+    Returns:
+        Dict with variable information and guidance on how to provide values
+    
+    Example:
+        # Get variables for CreateSiteAndLocations (ID 17)
+        vars_info = get_script_variables(script_id=17)
+        # Shows: tenant (ObjectVar) - needs tenant ID, use search_tenants()
+        #        region (ObjectVar) - needs region ID, use search_regions()
+        #        site_name (StringVar) - provide as string
+        #        number_of_floors (IntegerVar) - provide as integer
+    """
+    try:
+        # Get the script details
+        script = client.get("extras/scripts", id=script_id)
+        
+        if not isinstance(script, dict):
+            return {"success": False, "error": "Script not found"}
+        
+        vars_dict = script.get("vars", {})
+        
+        # Provide guidance for each variable type
+        var_guidance = {}
+        for var_name, var_type in vars_dict.items():
+            guidance = {
+                "type": var_type,
+                "required": True,  # Assume all are required unless script says otherwise
+            }
+            
+            # Add specific guidance based on type
+            if var_type == "ObjectVar":
+                # Suggest which tool to use to find the object ID
+                if "tenant" in var_name.lower():
+                    guidance["help"] = "Use search_objects('dcim/tenants', 'query') to find tenant ID"
+                    guidance["example"] = "Search for tenant name and use the 'id' field"
+                elif "region" in var_name.lower():
+                    guidance["help"] = "Use search_objects('dcim/regions', 'query') to find region ID"
+                    guidance["example"] = "Search for region name and use the 'id' field"
+                elif "site" in var_name.lower():
+                    guidance["help"] = "Use get_sites() or search_objects('dcim/sites', 'query') to find site ID"
+                    guidance["example"] = "Search for site name and use the 'id' field"
+                elif "device" in var_name.lower():
+                    guidance["help"] = "Use get_devices() or search_objects('dcim/devices', 'query') to find device ID"
+                    guidance["example"] = "Search for device name and use the 'id' field"
+                else:
+                    guidance["help"] = f"Use search_objects() to find the {var_name} object ID"
+                    guidance["example"] = "Search by name and use the 'id' field from results"
+            elif var_type == "StringVar":
+                guidance["help"] = "Provide as a string value"
+                guidance["example"] = f'"example_{var_name}"'
+            elif var_type == "IntegerVar":
+                guidance["help"] = "Provide as an integer value"
+                guidance["example"] = "10"
+            elif var_type == "BooleanVar":
+                guidance["help"] = "Provide as true or false"
+                guidance["example"] = "true"
+            else:
+                guidance["help"] = f"Provide value for {var_type}"
+                guidance["example"] = "See NetBox documentation"
+            
+            var_guidance[var_name] = guidance
+        
+        return {
+            "success": True,
+            "script_id": script_id,
+            "script_name": script.get("name"),
+            "description": script.get("description"),
+            "variables": var_guidance
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def search_for_object_id(endpoint: str, search_name: str, name_field: str = "name") -> Dict[str, Any]:
+    """
+    Search for NetBox objects by name and return their IDs.
+    
+    This is a helper tool for finding object IDs needed for ObjectVar parameters
+    in custom scripts. It searches for objects and returns their IDs.
+    
+    Args:
+        endpoint: NetBox API endpoint (e.g., "dcim/tenants", "dcim/regions", "dcim/sites")
+        search_name: The name to search for
+        name_field: Field name to search in (default: "name")
+    
+    Returns:
+        Dict with matching objects and their IDs
+    
+    Example:
+        # Find tenant ID for "Acme Corp"
+        result = search_for_object_id("dcim/tenants", "Acme Corp")
+        tenant_id = result["matches"][0]["id"]
+        
+        # Find region ID for "Europe"
+        result = search_for_object_id("dcim/regions", "Europe")
+        region_id = result["matches"][0]["id"]
+        
+        # Find site ID
+        result = search_for_object_id("dcim/sites", "DC-East-01")
+        site_id = result["matches"][0]["id"]
+    """
+    try:
+        # Search using the 'q' parameter for text search
+        params = {"q": search_name, "limit": 10}
+        results = client.get(endpoint, params=params)
+        
+        # Handle both list and dict responses
+        if isinstance(results, list):
+            matches = results
+        elif isinstance(results, dict) and 'results' in results:
+            matches = results['results']
+        else:
+            matches = []
+        
+        # Extract relevant fields for easier use
+        simplified_matches = []
+        for match in matches:
+            simplified = {
+                "id": match.get("id"),
+                "name": match.get("name") or match.get("display"),
+                "display": match.get("display"),
+                "url": match.get("url")
+            }
+            simplified_matches.append(simplified)
+        
+        return {
+            "success": True,
+            "endpoint": endpoint,
+            "search_name": search_name,
+            "count": len(simplified_matches),
+            "matches": simplified_matches
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
 def find_custom_script(query: str) -> Dict[str, Any]:
     """
     Search for custom scripts by name or description.
@@ -524,36 +669,54 @@ def execute_custom_script(script_id: int, data: Optional[Dict[str, Any]] = None,
     like creating sites with all necessary components, bulk device provisioning,
     IP address allocation workflows, or compliance automation.
     
-    To find script IDs and required parameters, first call get_custom_scripts().
+    IMPORTANT - ObjectVar Parameters:
+    - Scripts with ObjectVar parameters (like "tenant", "region", "site") require object IDs, not names
+    - Use get_script_variables(script_id) to see what parameters are needed
+    - Use search_for_object_id(endpoint, name) to find object IDs by name
+    
+    Workflow:
+    1. get_custom_scripts() - Find the script you want
+    2. get_script_variables(script_id) - See what parameters it needs
+    3. search_for_object_id() - Look up any object IDs needed
+    4. execute_custom_script() - Run with all parameters
+    5. get_script_job_status() - Check if it completed
     
     Args:
         script_id: Script ID from get_custom_scripts() (e.g., 17 for "CreateSiteAndLocations")
         data: Dictionary of parameters required by the script (must match script's "vars")
+              - ObjectVar: Provide object ID (integer) - use search_for_object_id() to find
+              - StringVar: Provide string value
+              - IntegerVar: Provide integer value
+              - BooleanVar: Provide true/false
         commit: Whether to commit changes (default: True, use False for dry-run)
     
     Returns:
         Dict with success status and job information for tracking execution
     
-    Example:
-        # First, get available scripts to find the ID
-        scripts = get_custom_scripts()
-        # Find the script you want (e.g., CreateSiteAndLocations)
+    Example - Complete workflow:
+        # Step 1: Find tenant ID (ObjectVar)
+        tenant_result = search_for_object_id("dcim/tenants", "Acme Corp")
+        tenant_id = tenant_result["matches"][0]["id"]  # e.g., 1
         
-        # Execute the site creation workflow
+        # Step 2: Find region ID (ObjectVar)
+        region_result = search_for_object_id("dcim/regions", "Europe")
+        region_id = region_result["matches"][0]["id"]  # e.g., 2
+        
+        # Step 3: Execute the script with IDs
         result = execute_custom_script(
-            script_id=17,
+            script_id=17,  # CreateSiteAndLocations
             data={
-                "tenant": 1,              # Tenant ID
-                "region": 2,              # Region ID  
-                "site_name": "DC-East-01",
-                "address": "123 Main St",
-                "number_of_floors": 3,
-                "lowest_floor": 0
+                "tenant": tenant_id,      # ObjectVar: Use ID, not name!
+                "region": region_id,      # ObjectVar: Use ID, not name!
+                "site_name": "DC-East-01", # StringVar: Use string
+                "address": "123 Main St",  # StringVar: Use string
+                "number_of_floors": 3,     # IntegerVar: Use integer
+                "lowest_floor": 0          # IntegerVar: Use integer
             },
             commit=True
         )
         
-        # Check execution status
+        # Step 4: Check execution status
         job_id = result["job_id"]
         status = get_script_job_status(job_id)
     """
@@ -655,7 +818,7 @@ def list_script_jobs(limit: int = 50, script_name: Optional[str] = None) -> Dict
 if __name__ == "__main__":
     print(f"🚀 NetBox MCP Server starting...")
     print(f"🔗 NetBox URL: {netbox_url}")
-    print(f"🛠️  Available tools: 19 (DCIM, IPAM, Custom Scripts, CRUD operations)")
+    print(f"🛠️  Available tools: 21 (DCIM, IPAM, Custom Scripts, CRUD operations)")
     print(f"🌐 Server starting on: http://{mcp_host}:{mcp_port}")
     print(f"🔗 HTTP endpoint: http://{mcp_host}:{mcp_port}")
     print(f"✅ Server ready for MCP client connections via HTTP.")
@@ -665,7 +828,7 @@ if __name__ == "__main__":
     print(f"   🌐 IPAM: IP Addresses, Prefixes, VLANs")
     print(f"   🔍 Search & Query: Universal search across objects")
     print(f"   ✏️  CRUD: Create, Read, Update, Delete operations")
-    print(f"   🔧 Custom Scripts: Discover and execute workflows via natural language")
+    print(f"   🔧 Custom Scripts: AI-driven workflow execution with ObjectVar resolution")
     
     # Start the MCP server in HTTP mode
     try:
