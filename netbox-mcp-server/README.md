@@ -58,7 +58,8 @@ This server now supports **NetBox Custom Scripts**, enabling:
 - **`get_custom_scripts`**: List all available custom scripts and workflows
 - **`find_custom_script`**: Search for scripts by natural language description
 - **`get_script_variables`**: Get detailed info about script parameters (especially ObjectVars)
-- **`search_for_object_id`**: Look up object IDs by name (for ObjectVar parameters)
+- **`get_object_choices`**: List all available options for ObjectVar parameters (recommended)
+- **`search_for_object_id`**: Look up object IDs by name (deprecated - use get_object_choices instead)
 - **`execute_custom_script`**: Run custom scripts with parameters
 - **`get_script_job_status`**: Check script execution status and results
 - **`list_script_jobs`**: View history of script executions
@@ -145,21 +146,31 @@ The NetBox MCP Server supports **NetBox Custom Scripts**, enabling you to execut
 
 ### Example Workflow
 
-**User**: "Run workflow to create a new site called DC-East-01 in the Acme Corp tenant"
+**User**: "Run workflow to create a new site called DC-East-01"
 
-**AI Process**:
+**AI Process (Improved UX)**:
 1. Calls `find_custom_script("create site")` to discover matching workflows
 2. Finds `CreateSiteAndLocations` (ID 17)
 3. Calls `get_script_variables(17)` to see it needs:
    - `tenant` (ObjectVar) - needs tenant ID
    - `region` (ObjectVar) - needs region ID
    - `site_name` (StringVar) - "DC-East-01"
-   - `number_of_floors` (IntegerVar) - asks user or uses default
-4. Calls `search_for_object_id("dcim/tenants", "Acme Corp")` to get tenant ID
-5. Calls `search_for_object_id("dcim/regions", "Europe")` to get region ID (asks user if needed)
+   - `number_of_floors` (IntegerVar) - asks user
+4. **IMPROVED**: Calls `get_object_choices("dcim/tenants")` to show ALL tenants:
+   - Shows: "1: Acme Corp, 2: TechCo, 3: GlobalNet"
+   - User picks: "Acme Corp" → uses ID 1
+5. **IMPROVED**: Calls `get_object_choices("dcim/regions")` to show ALL regions:
+   - Shows: "1: North America, 2: Europe, 3: Asia Pacific"
+   - User picks: "Europe" → uses ID 2
 6. Executes `execute_custom_script()` with all resolved parameters
 7. Monitors execution with `get_script_job_status()`
 8. Reports results back to user
+
+**Benefits**:
+- ✅ No typos - user picks from list
+- ✅ No failed searches - always valid options
+- ✅ Better UX - clear choices
+- ✅ Faster - no guessing
 
 ### Common Use Cases
 
@@ -302,7 +313,7 @@ manufacturers = get_manufacturers()
 ### Custom Scripts & Workflows
 
 ```python
-# COMPLETE WORKFLOW: Handling ObjectVar parameters
+# COMPLETE WORKFLOW: Improved UX with object selection
 
 # Step 1: Find the script you want to run
 matches = find_custom_script("create site")
@@ -317,21 +328,39 @@ print(vars_info["variables"])
 #   site_name (StringVar) - provide as string
 #   number_of_floors (IntegerVar) - provide as integer
 
-# Step 3: Resolve ObjectVar parameters (look up IDs by name)
-# Find tenant ID for "Acme Corp"
-tenant_result = search_for_object_id("dcim/tenants", "Acme Corp")
-tenant_id = tenant_result["matches"][0]["id"]  # e.g., 1
+# Step 3: Show available choices for ObjectVar parameters
+# IMPROVED: Show user ALL available tenants to choose from
+tenants = get_object_choices("dcim/tenants")
+print("Available tenants:")
+for t in tenants["choices"]:
+    print(f"  {t['id']}: {t['name']}")
+# Output:
+#   1: Acme Corp
+#   2: TechCo
+#   3: GlobalNet
 
-# Find region ID for "Europe"
-region_result = search_for_object_id("dcim/regions", "Europe")
-region_id = region_result["matches"][0]["id"]  # e.g., 2
+# User selects: "Acme Corp"
+tenant_id = 1  # Selected from list above
+
+# IMPROVED: Show user ALL available regions to choose from
+regions = get_object_choices("dcim/regions")
+print("Available regions:")
+for r in regions["choices"]:
+    print(f"  {r['id']}: {r['name']}")
+# Output:
+#   1: North America
+#   2: Europe
+#   3: Asia Pacific
+
+# User selects: "Europe"
+region_id = 2  # Selected from list above
 
 # Step 4: Execute the script with all parameters
 job_result = execute_custom_script(
     script_id=17,
     data={
-        "tenant": tenant_id,             # ObjectVar: Use ID (1)
-        "region": region_id,             # ObjectVar: Use ID (2)
+        "tenant": tenant_id,             # ObjectVar: ID from choice list
+        "region": region_id,             # ObjectVar: ID from choice list
         "site_name": "DC-West-01",       # StringVar: String
         "address": "123 Data Center Dr",  # StringVar: String
         "number_of_floors": 3,           # IntegerVar: Integer

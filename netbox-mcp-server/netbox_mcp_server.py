@@ -479,20 +479,32 @@ def get_script_variables(script_id: int) -> Dict[str, Any]:
             if var_type == "ObjectVar":
                 # Suggest which tool to use to find the object ID
                 if "tenant" in var_name.lower():
-                    guidance["help"] = "Use search_objects('dcim/tenants', 'query') to find tenant ID"
-                    guidance["example"] = "Search for tenant name and use the 'id' field"
+                    guidance["help"] = "Use get_object_choices('dcim/tenants') to list all tenants"
+                    guidance["endpoint"] = "dcim/tenants"
+                    guidance["example"] = "Show user list of tenants and let them choose"
                 elif "region" in var_name.lower():
-                    guidance["help"] = "Use search_objects('dcim/regions', 'query') to find region ID"
-                    guidance["example"] = "Search for region name and use the 'id' field"
+                    guidance["help"] = "Use get_object_choices('dcim/regions') to list all regions"
+                    guidance["endpoint"] = "dcim/regions"
+                    guidance["example"] = "Show user list of regions and let them choose"
                 elif "site" in var_name.lower():
-                    guidance["help"] = "Use get_sites() or search_objects('dcim/sites', 'query') to find site ID"
-                    guidance["example"] = "Search for site name and use the 'id' field"
+                    guidance["help"] = "Use get_object_choices('dcim/sites') to list all sites"
+                    guidance["endpoint"] = "dcim/sites"
+                    guidance["example"] = "Show user list of sites and let them choose"
                 elif "device" in var_name.lower():
-                    guidance["help"] = "Use get_devices() or search_objects('dcim/devices', 'query') to find device ID"
-                    guidance["example"] = "Search for device name and use the 'id' field"
+                    guidance["help"] = "Use get_object_choices('dcim/devices') to list all devices"
+                    guidance["endpoint"] = "dcim/devices"
+                    guidance["example"] = "Show user list of devices and let them choose"
+                elif "role" in var_name.lower():
+                    guidance["help"] = "Use get_object_choices('dcim/device-roles') to list all device roles"
+                    guidance["endpoint"] = "dcim/device-roles"
+                    guidance["example"] = "Show user list of device roles and let them choose"
+                elif "type" in var_name.lower():
+                    guidance["help"] = "Use get_object_choices('dcim/device-types') to list all device types"
+                    guidance["endpoint"] = "dcim/device-types"
+                    guidance["example"] = "Show user list of device types and let them choose"
                 else:
-                    guidance["help"] = f"Use search_objects() to find the {var_name} object ID"
-                    guidance["example"] = "Search by name and use the 'id' field from results"
+                    guidance["help"] = f"Use get_object_choices() to list available {var_name} objects"
+                    guidance["example"] = "Show user list of options and let them choose"
             elif var_type == "StringVar":
                 guidance["help"] = "Provide as a string value"
                 guidance["example"] = f'"example_{var_name}"'
@@ -519,9 +531,76 @@ def get_script_variables(script_id: int) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 @mcp.tool()
+def get_object_choices(endpoint: str, limit: int = 50) -> Dict[str, Any]:
+    """
+    Get a list of available objects for selection (for ObjectVar parameters).
+    
+    This tool shows ALL available options for object selection, making it easy
+    to pick the right one without guessing names. Much better UX than searching!
+    
+    Use this to show users what tenants, regions, sites, etc. are available
+    before asking them to choose.
+    
+    Args:
+        endpoint: NetBox API endpoint (e.g., "dcim/tenants", "dcim/regions", "dcim/sites")
+        limit: Maximum number of objects to return (default: 50)
+    
+    Returns:
+        Dict with list of available objects with their IDs and names
+    
+    Example:
+        # Show all available tenants
+        tenants = get_object_choices("dcim/tenants")
+        # Display to user: "1: Acme Corp, 2: TechCo, 3: GlobalNet"
+        # User picks: "Acme Corp"
+        # Use ID: 1
+        
+        # Show all available regions
+        regions = get_object_choices("dcim/regions")
+        # Display: "1: North America, 2: Europe, 3: Asia Pacific"
+        
+        # Show all sites
+        sites = get_object_choices("dcim/sites")
+    """
+    try:
+        params = {"limit": limit}
+        results = client.get(endpoint, params=params)
+        
+        # Handle both list and dict responses
+        if isinstance(results, list):
+            objects = results
+        elif isinstance(results, dict) and 'results' in results:
+            objects = results['results']
+        else:
+            objects = []
+        
+        # Extract relevant fields for selection
+        choices = []
+        for obj in objects:
+            choice = {
+                "id": obj.get("id"),
+                "name": obj.get("name") or obj.get("display"),
+                "display": obj.get("display"),
+                "description": obj.get("description", ""),
+            }
+            choices.append(choice)
+        
+        return {
+            "success": True,
+            "endpoint": endpoint,
+            "count": len(choices),
+            "choices": choices,
+            "message": f"Found {len(choices)} available options. User can select by name or ID."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
 def search_for_object_id(endpoint: str, search_name: str, name_field: str = "name") -> Dict[str, Any]:
     """
     Search for NetBox objects by name and return their IDs.
+    
+    DEPRECATED: Consider using get_object_choices() instead to show all options first.
     
     This is a helper tool for finding object IDs needed for ObjectVar parameters
     in custom scripts. It searches for objects and returns their IDs.
@@ -818,7 +897,7 @@ def list_script_jobs(limit: int = 50, script_name: Optional[str] = None) -> Dict
 if __name__ == "__main__":
     print(f"🚀 NetBox MCP Server starting...")
     print(f"🔗 NetBox URL: {netbox_url}")
-    print(f"🛠️  Available tools: 21 (DCIM, IPAM, Custom Scripts, CRUD operations)")
+    print(f"🛠️  Available tools: 22 (DCIM, IPAM, Custom Scripts, CRUD operations)")
     print(f"🌐 Server starting on: http://{mcp_host}:{mcp_port}")
     print(f"🔗 HTTP endpoint: http://{mcp_host}:{mcp_port}")
     print(f"✅ Server ready for MCP client connections via HTTP.")
@@ -828,7 +907,7 @@ if __name__ == "__main__":
     print(f"   🌐 IPAM: IP Addresses, Prefixes, VLANs")
     print(f"   🔍 Search & Query: Universal search across objects")
     print(f"   ✏️  CRUD: Create, Read, Update, Delete operations")
-    print(f"   🔧 Custom Scripts: AI-driven workflow execution with ObjectVar resolution")
+    print(f"   🔧 Custom Scripts: AI-driven workflows with smart object selection")
     
     # Start the MCP server in HTTP mode
     try:
